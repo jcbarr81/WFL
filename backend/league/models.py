@@ -73,6 +73,18 @@ class Team(models.Model):
     abbreviation = models.CharField(max_length=5)
     primary_color = models.CharField(max_length=7, default="#000000")
     secondary_color = models.CharField(max_length=7, default="#FFFFFF")
+    stadium_name = models.CharField(max_length=255, blank=True, default="")
+    stadium_capacity = models.PositiveIntegerField(default=60000)
+    stadium_turf = models.CharField(
+        max_length=20,
+        choices=[("grass", "Grass"), ("turf", "Turf"), ("hybrid", "Hybrid")],
+        default="grass",
+    )
+    stadium_weather = models.CharField(
+        max_length=20,
+        choices=[("temperate", "Temperate"), ("cold", "Cold"), ("dome", "Dome"), ("extreme", "Extreme")],
+        default="temperate",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -122,6 +134,8 @@ class Game(models.Model):
         default="scheduled",
     )
     scheduled_at = models.DateTimeField(null=True, blank=True)
+    winner = models.ForeignKey(Team, null=True, blank=True, on_delete=models.SET_NULL, related_name="wins")
+    loser = models.ForeignKey(Team, null=True, blank=True, on_delete=models.SET_NULL, related_name="losses")
 
     class Meta:
         ordering = ["week_id", "id"]
@@ -154,7 +168,9 @@ class Player(models.Model):
     overall_rating = models.PositiveIntegerField(default=60)
     potential_rating = models.PositiveIntegerField(default=70)
     injury_status = models.CharField(max_length=50, default="healthy")
+    league = models.ForeignKey(League, null=True, blank=True, on_delete=models.CASCADE, related_name="players")
     team = models.ForeignKey(Team, null=True, blank=True, on_delete=models.SET_NULL, related_name="players")
+    is_rookie_pool = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -163,6 +179,27 @@ class Player(models.Model):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name} ({self.position})"
+
+
+class Injury(models.Model):
+    STATUS_CHOICES = [
+        ("active", "Active"),
+        ("resolved", "Resolved"),
+    ]
+
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="injuries")
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="injuries")
+    severity = models.CharField(max_length=50, default="minor")
+    duration_weeks = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.player} - {self.severity} ({self.status})"
 
 
 class Contract(models.Model):
@@ -189,11 +226,25 @@ class Contract(models.Model):
 class AuditLog(models.Model):
     ACTION_CHOICES = [
         ("league.create", "League Created"),
+        ("league.update", "League Updated"),
+        ("league.delete", "League Deleted"),
         ("team.create", "Team Created"),
+        ("team.delete", "Team Deleted"),
         ("roster.add", "Roster Add"),
         ("roster.release", "Roster Release"),
+        ("league.schedule.generate", "Schedule Generated"),
+        ("trade.create", "Trade Created"),
+        ("trade.accept", "Trade Accepted"),
+        ("trade.reverse", "Trade Reversed"),
+        ("waiver.release", "Waiver Release"),
+        ("waiver.claim", "Waiver Claim"),
+        ("fa.bid", "Free Agency Bid"),
+        ("fa.award", "Free Agency Award"),
+        ("contract.update", "Contract Update"),
+        ("draft.create", "Draft Created"),
+        ("draft.pick", "Draft Pick Made"),
+        ("game.complete", "Game Completed"),
     ]
-
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
     action = models.CharField(max_length=50, choices=ACTION_CHOICES)
     entity_type = models.CharField(max_length=50)
@@ -207,3 +258,135 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"{self.action} {self.entity_type} {self.entity_id}"
+
+
+class Trade(models.Model):
+    STATUS_CHOICES = [
+        ("proposed", "Proposed"),
+        ("accepted", "Accepted"),
+        ("reversed", "Reversed"),
+        ("rejected", "Rejected"),
+    ]
+
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="trades")
+    from_team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="trades_out")
+    to_team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="trades_in")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="proposed")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Trade {self.id} {self.from_team} -> {self.to_team} ({self.status})"
+
+
+class FreeAgencyBid(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("awarded", "Awarded"),
+    ]
+
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="fa_bids")
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="fa_bids")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="fa_bids")
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    mode = models.CharField(max_length=20, default="auction")
+    round_number = models.PositiveIntegerField(default=1)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    created_at = models.DateTimeField(auto_now_add=True)
+    awarded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"FA Bid {self.player} -> {self.team} (${self.amount}) [{self.status}]"
+
+
+class Notification(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
+    message = models.CharField(max_length=255)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user} - {self.message}"
+
+
+class TradeItem(models.Model):
+    trade = models.ForeignKey(Trade, on_delete=models.CASCADE, related_name="items")
+    player = models.ForeignKey(Player, on_delete=models.CASCADE)
+    from_team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="trade_items_from")
+    to_team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="trade_items_to")
+
+    class Meta:
+        unique_together = ("trade", "player")
+
+    def __str__(self):
+        return f"{self.player} {self.from_team} -> {self.to_team}"
+
+
+class Draft(models.Model):
+    TYPE_CHOICES = [
+        ("rookie", "Rookie"),
+    ]
+
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="drafts")
+    season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="drafts", null=True, blank=True)
+    draft_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="rookie")
+    rounds = models.PositiveIntegerField(default=4)
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_complete = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.league.name} {self.get_draft_type_display()} Draft"
+
+
+class DraftPick(models.Model):
+    draft = models.ForeignKey(Draft, on_delete=models.CASCADE, related_name="picks")
+    round_number = models.PositiveIntegerField()
+    overall_number = models.PositiveIntegerField()
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="draft_picks")
+    player = models.ForeignKey(Player, null=True, blank=True, on_delete=models.SET_NULL, related_name="draft_pick")
+    original_team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="original_picks")
+    is_selected = models.BooleanField(default=False)
+    selected_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["overall_number"]
+        unique_together = ("draft", "overall_number")
+
+    def __str__(self):
+        return f"Pick {self.overall_number} (Round {self.round_number})"
+
+
+class WaiverClaim(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("awarded", "Awarded"),
+        ("failed", "Failed"),
+    ]
+
+    league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="waiver_claims")
+    player = models.OneToOneField(Player, on_delete=models.CASCADE, related_name="waiver_claim")
+    from_team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, related_name="waivers_out")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    claimed_by = models.ForeignKey(Team, null=True, blank=True, on_delete=models.SET_NULL, related_name="waivers_in")
+    created_at = models.DateTimeField(auto_now_add=True)
+    awarded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Waiver {self.player} ({self.status})"

@@ -20,24 +20,26 @@
 - CI green on lint/tests.
 
 ## Phase 1 – League + Roster Core (2–3 wks)
+**Status**: Implemented (UI + API); minor polish possible.
 **Goals**: League creation, teams, rosters, contracts, trades, audit logs.
-- League creation wizard (React) with commish settings: league size, divisions/conferences, FA mode, cap growth toggle, playoff expansion toggle, realignment enabled, schedule defaults.
-- Team ownership assignment; stadium data; relocation/expansion stubs.
-- Roster rules enforcement (size, positional mins/maxes), waivers.
-- Contracts: salary + bonus; simple cap check; payouts on cut; rookie scale, extensions, franchise/transition tags framework.
-- Trades: players/picks/future picks; commish reversal path.
-- Audit logging for commish/owner actions.
-- CSV export scaffolding for rosters/contracts.
-**Acceptance**:
-- Create league → add teams/owners → enforce roster rules and cap on add/cut/trade.
+- League creation wizard (React) with commish settings: league size, divisions/conferences, FA mode, cap growth toggle, playoff expansion toggle, realignment enabled, schedule defaults. **Done (UI/API)**
+- Team ownership assignment; stadium data; relocation/expansion stubs. **Team CRUD + delete + owner/stadium fields in UI/API; relocation/expansion stubs pending**
+- Roster rules enforcement (size, positional mins/maxes), waivers. **Roster add/release/waive + cap check in UI**
+- Contracts: salary + bonus; simple cap check; payouts on cut; rookie scale, extensions, franchise/transition tags framework. **Cap check enforced on add; contract edit UI**
+- Trades: players/picks/future picks; commish reversal path. **Basic trade UI: move players both ways; auto-accept**
+- Audit logging for commish/owner actions. **Expanded to delete actions**
+- CSV export scaffolding for rosters/contracts. **Roster/Waiver CSV export in UI**
+- Rename conferences/divisions. **Inline edit controls in UI; commish-only**
+**Acceptance (met except noted)**:
+- Create league → add teams/owners → enforce roster rules and cap on add/cut/trade. **Owners/stadium entry working; relocation/expansion stubs pending**
 - Execute trades and reversals; waivers process runs; audit entries recorded.
 - Exports produce CSV for rosters/contracts.
 
 ## Phase 2 – Season Lifecycle (3–4 wks)
 **Goals**: Schedule, standings/playoffs, drafts, free agency modes, injuries, notifications.
-- Schedule generator (NFL defaults) with commish override; bye weeks; season/ week entities.
-- Standings computation; playoff seeding/bracket (NFL rules).
-- Startup snake draft (or default rosters) and 4-round rookie draft with fixed order; draft room UI.
+- Schedule generator (NFL defaults) with commish override; bye weeks; season/ week entities. **Round-robin generator + UI to generate/load schedules and enter results is live**
+- Standings computation; playoff seeding/bracket (NFL rules). **Standings + seeds endpoints/UI wired; bracket endpoint + UI preview in place; full NFL bracket logic still pending**
+- Startup snake draft (or default rosters) and 4-round rookie draft with fixed order; draft room UI. **Rookie pool generate/list + draft picker UI; picks assign rookies to teams; rookie pool TBD for realism**
 - Free agency: auction with end dates vs round-based bidding (4 rounds) selectable at league setup.
 - Waiver claims; conflict resolution rules for FA/bids/waivers.
 - Injury system (severity/duration, day-to-day vs IR) with return-to-play logic.

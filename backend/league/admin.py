@@ -1,15 +1,20 @@
 from django.contrib import admin
 
 from .models import (
+    AuditLog,
     Conference,
     Contract,
+    Draft,
+    DraftPick,
     Division,
     Game,
     League,
-    AuditLog,
     Player,
     Season,
     Team,
+    Trade,
+    TradeItem,
+    WaiverClaim,
     Week,
 )
 
@@ -76,3 +81,33 @@ class AuditLogAdmin(admin.ModelAdmin):
     list_display = ("action", "entity_type", "entity_id", "user", "created_at")
     list_filter = ("action", "entity_type")
     search_fields = ("entity_id", "user__email")
+
+
+class TradeItemInline(admin.TabularInline):
+    model = TradeItem
+    extra = 0
+
+
+@admin.register(Trade)
+class TradeAdmin(admin.ModelAdmin):
+    list_display = ("id", "league", "from_team", "to_team", "status", "created_by", "created_at")
+    list_filter = ("league", "status")
+    inlines = [TradeItemInline]
+
+
+@admin.register(WaiverClaim)
+class WaiverClaimAdmin(admin.ModelAdmin):
+    list_display = ("player", "league", "from_team", "status", "claimed_by", "created_at")
+    list_filter = ("league", "status")
+
+
+class DraftPickInline(admin.TabularInline):
+    model = DraftPick
+    extra = 0
+
+
+@admin.register(Draft)
+class DraftAdmin(admin.ModelAdmin):
+    list_display = ("league", "draft_type", "rounds", "is_complete", "created_at")
+    list_filter = ("league", "draft_type", "is_complete")
+    inlines = [DraftPickInline]
