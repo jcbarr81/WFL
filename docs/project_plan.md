@@ -36,19 +36,21 @@
 - Exports produce CSV for rosters/contracts.
 
 ## Phase 2 – Season Lifecycle (3–4 wks)
+**Status**: Complete for Phase 2 baseline; polish backlog noted below.
 **Goals**: Schedule, standings/playoffs, drafts, free agency modes, injuries, notifications.
-- Schedule generator (NFL defaults) with commish override; bye weeks; season/ week entities. **Round-robin generator + UI to generate/load schedules and enter results is live**
-- Standings computation; playoff seeding/bracket (NFL rules). **Standings + seeds endpoints/UI wired; bracket endpoint + UI preview in place; full NFL bracket logic still pending**
-- Startup snake draft (or default rosters) and 4-round rookie draft with fixed order; draft room UI. **Rookie pool generate/list + draft picker UI; picks assign rookies to teams; rookie pool TBD for realism**
-- Free agency: auction with end dates vs round-based bidding (4 rounds) selectable at league setup.
-- Waiver claims; conflict resolution rules for FA/bids/waivers.
-- Injury system (severity/duration, day-to-day vs IR) with return-to-play logic.
-- Notifications: in-app + SMTP stub; user preferences for channels.
-**Acceptance**:
-- Generate full season schedule; edit games manually as commish.
-- Run startup draft → populate rosters; run rookie draft; run FA session in chosen mode; waivers resolve.
-- Injuries applied and enforced on availability; notifications fire for key events.
-- Playoffs bracket forms from standings and advances per results (even if simulated with placeholder).
+- Schedule generator (NFL defaults) with commish override; bye weeks; season/week entities. **Round-robin generator + UI to generate/load schedules and enter results is live; bye editor shipped**
+- Standings computation; playoff seeding/bracket (NFL rules). **Seeds + bracket now grouped by conference (7 seeds per conf with 1-seed bye) and returned via API**
+- Startup snake draft (or default rosters) and 4-round rookie draft with fixed order; draft room UI. **Rookie pool generator upgraded (positional distribution + rating bands); default roster seeding endpoint added; picks assign rookies to teams**
+- Free agency: auction with end dates vs round-based bidding (4 rounds) selectable at league setup. **Auction/round modes implemented with cap/active-roster checks; timers exposed via expires_at**
+- Waiver claims; conflict resolution rules for FA/bids/waivers. **Waivers UI/API working; tie-breaker/priority rules can be expanded**
+- Injury system (severity/duration, day-to-day vs IR) with return-to-play logic. **Injury CRUD; majors auto-IR; IR reduces active roster counts; resolving heals and removes IR**
+- Notifications: in-app + SMTP stub; user preferences for channels. **Notification preferences endpoint (in-app/email toggle) added; notifications respect prefs; email remains stub**
+**Polish / nice-to-have backlog from Phase 2**:
+- Advance playoff bracket rounds automatically as results are recorded (currently wild-card pairing only).
+- Improve rookie name pool (bigger list, colleges/bio) and add deterministic seeding by draft order strength.
+- FA UX: countdown timers in UI for auctions; explicit “resolve round” banner for round mode; document tie-breakers in UI.
+- Injury impact: block “play” actions for injured players unless flagged to play through; add snap-count limits.
+- Wire email sending (SMTP) behind the notification preferences; add per-category preference toggles.
 
 ## Phase 3 – Simulation Engine v1 (4–6 wks)
 **Goals**: Ratings-driven play-by-play sim, stats persistence, gameplans, bulk + live view.

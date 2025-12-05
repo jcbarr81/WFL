@@ -129,12 +129,29 @@ export const generateSeason = (leagueId, year) =>
 export const getSchedule = (leagueId, year) => apiFetch(`/leagues/${leagueId}/seasons/${year}/schedule/`)
 export const completeGame = (gameId, home_score, away_score) =>
   apiFetch(`/games/${gameId}/complete/`, { method: 'PUT', body: { home_score, away_score } })
+export const updateGame = (gameId, data) => apiFetch(`/games/${gameId}/update/`, { method: 'PUT', body: data })
 export const getStandings = (leagueId, year) =>
   apiFetch(`/leagues/${leagueId}/seasons/${year}/standings/`)
 export const getPlayoffSeeds = (leagueId, year) =>
   apiFetch(`/leagues/${leagueId}/seasons/${year}/seeds/`)
 export const getPlayoffBracket = (leagueId, year) =>
   apiFetch(`/leagues/${leagueId}/seasons/${year}/bracket/`)
+export const advancePlayoffs = (leagueId, year) =>
+  apiFetch(`/leagues/${leagueId}/seasons/${year}/playoffs/advance/`, { method: 'POST' })
+export const listByes = (leagueId, year) => apiFetch(`/leagues/${leagueId}/seasons/${year}/byes/`)
+export const createBye = (leagueId, year, data) =>
+  apiFetch(`/leagues/${leagueId}/seasons/${year}/byes/`, { method: 'POST', body: data })
+export const deleteBye = (byeId) => apiFetch(`/byes/${byeId}/delete/`, { method: 'DELETE' })
+
+// Stats / dashboards
+export const getPlayerSeasonStats = (leagueId, year) =>
+  apiFetch(`/leagues/${leagueId}/seasons/${year}/player_stats/`)
+export const getPlayerLeaders = (leagueId, year, stat = 'pass_yds', limit = 10) =>
+  apiFetch(`/leagues/${leagueId}/seasons/${year}/leaders/?stat=${stat}&limit=${limit}`)
+export const getTeamSeasonStats = (leagueId, year) =>
+  apiFetch(`/leagues/${leagueId}/seasons/${year}/team_stats/`)
+export const getPlayerDetail = (playerId) => apiFetch(`/players/${playerId}/detail/`)
+export const comparePlayers = (playerIds) => apiFetch(`/players/compare/`, { method: 'POST', body: { player_ids: playerIds } })
 
 // Drafts
 export const createDraft = (leagueId) => apiFetch(`/leagues/${leagueId}/drafts/`, { method: 'POST' })
@@ -149,6 +166,7 @@ export const listRookies = (leagueId) => apiFetch(`/leagues/${leagueId}/drafts/r
 export const listFreeAgents = (leagueId) => apiFetch(`/leagues/${leagueId}/free_agents/`)
 export const bidFreeAgent = (leagueId, data) =>
   apiFetch(`/leagues/${leagueId}/free_agents/bids/`, { method: 'POST', body: data })
+export const listFreeAgencyBids = (leagueId) => apiFetch(`/leagues/${leagueId}/free_agents/bids/`)
 export const resolveFreeAgency = (leagueId) =>
   apiFetch(`/leagues/${leagueId}/free_agents/resolve/`, { method: 'POST' })
 
@@ -160,3 +178,9 @@ export const resolveInjury = (injuryId) =>
   apiFetch(`/injuries/${injuryId}/resolve/`, { method: 'PUT' })
 export const listNotifications = () => apiFetch('/notifications/')
 export const markNotificationRead = (id) => apiFetch(`/notifications/${id}/read/`, { method: 'PUT' })
+export const getNotificationPreferences = () => apiFetch('/notifications/preferences/')
+export const updateNotificationPreferences = (data) => apiFetch('/notifications/preferences/', { method: 'PUT', body: data })
+export const listAuditLog = (leagueId) => {
+  const suffix = leagueId ? `?league_id=${leagueId}` : ''
+  return apiFetch(`/audit/${suffix}`)
+}

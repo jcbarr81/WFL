@@ -168,6 +168,15 @@ class Player(models.Model):
     overall_rating = models.PositiveIntegerField(default=60)
     potential_rating = models.PositiveIntegerField(default=70)
     injury_status = models.CharField(max_length=50, default="healthy")
+    on_ir = models.BooleanField(default=False)
+    rating_speed = models.PositiveIntegerField(default=60)
+    rating_accel = models.PositiveIntegerField(default=60)
+    rating_agility = models.PositiveIntegerField(default=60)
+    rating_strength = models.PositiveIntegerField(default=60)
+    rating_hands = models.PositiveIntegerField(default=60)
+    rating_endurance = models.PositiveIntegerField(default=60)
+    rating_intelligence = models.PositiveIntegerField(default=60)
+    rating_discipline = models.PositiveIntegerField(default=60)
     league = models.ForeignKey(League, null=True, blank=True, on_delete=models.CASCADE, related_name="players")
     team = models.ForeignKey(Team, null=True, blank=True, on_delete=models.SET_NULL, related_name="players")
     is_rookie_pool = models.BooleanField(default=False)
@@ -179,6 +188,10 @@ class Player(models.Model):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name} ({self.position})"
+
+    @property
+    def contract(self):
+        return self.contracts.order_by("-start_year", "-id").first()
 
 
 class Injury(models.Model):
@@ -287,6 +300,7 @@ class FreeAgencyBid(models.Model):
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("awarded", "Awarded"),
+        ("rejected", "Rejected"),
     ]
 
     league = models.ForeignKey(League, on_delete=models.CASCADE, related_name="fa_bids")
@@ -309,6 +323,7 @@ class FreeAgencyBid(models.Model):
 
 class Notification(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
+    category = models.CharField(max_length=50, default="general")
     message = models.CharField(max_length=255)
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -320,9 +335,100 @@ class Notification(models.Model):
         return f"{self.user} - {self.message}"
 
 
+class NotificationPreference(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notification_pref")
+    in_app_enabled = models.BooleanField(default=True)
+    email_enabled = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Notification prefs for {self.user}"
+
+
+class PlayLog(models.Model):
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="plays")
+    play_index = models.PositiveIntegerField()
+    quarter = models.PositiveIntegerField(default=1)
+    clock_seconds = models.PositiveIntegerField(default=900)
+    summary = models.CharField(max_length=255)
+    home_score = models.IntegerField(default=0)
+    away_score = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["game_id", "play_index"]
+
+    def __str__(self):
+        return f"{self.game} play {self.play_index}"
+
+
+class TeamGameStat(models.Model):
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="team_stats")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="game_stats")
+    total_yards = models.IntegerField(default=0)
+    pass_yards = models.IntegerField(default=0)
+    rush_yards = models.IntegerField(default=0)
+    turnovers = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("game", "team")
+        ordering = ["game_id", "team_id"]
+
+    def __str__(self):
+        return f"{self.team} stats for {self.game}"
+
+
+class PlayerGameStat(models.Model):
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="player_stats")
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="game_stats")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="player_game_stats")
+    position = models.CharField(max_length=5, default="")
+    pass_att = models.IntegerField(default=0)
+    pass_cmp = models.IntegerField(default=0)
+    pass_yds = models.IntegerField(default=0)
+    pass_td = models.IntegerField(default=0)
+    pass_int = models.IntegerField(default=0)
+    rush_att = models.IntegerField(default=0)
+    rush_yds = models.IntegerField(default=0)
+    rush_td = models.IntegerField(default=0)
+    rec = models.IntegerField(default=0)
+    rec_yds = models.IntegerField(default=0)
+    rec_td = models.IntegerField(default=0)
+    tackles = models.IntegerField(default=0)
+    sacks = models.IntegerField(default=0)
+    interceptions = models.IntegerField(default=0)
+    fumbles = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("game", "player")
+        ordering = ["game_id", "player_id"]
+
+    def __str__(self):
+        return f"{self.player} stats for {self.game}"
+
+
+class ByeWeek(models.Model):
+    season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="byes")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="byes")
+    week_number = models.PositiveIntegerField()
+
+    class Meta:
+        unique_together = ("season", "team", "week_number")
+        ordering = ["season_id", "week_number", "team_id"]
+
+    def __str__(self):
+        return f"{self.team} bye week {self.week_number} ({self.season.year})"
+
+
 class TradeItem(models.Model):
     trade = models.ForeignKey(Trade, on_delete=models.CASCADE, related_name="items")
-    player = models.ForeignKey(Player, on_delete=models.CASCADE)
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, null=True, blank=True)
+    pick_year = models.PositiveIntegerField(null=True, blank=True)
+    pick_round = models.PositiveIntegerField(null=True, blank=True)
+    cash_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     from_team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="trade_items_from")
     to_team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="trade_items_to")
 
@@ -330,7 +436,13 @@ class TradeItem(models.Model):
         unique_together = ("trade", "player")
 
     def __str__(self):
-        return f"{self.player} {self.from_team} -> {self.to_team}"
+        if self.player:
+            return f"{self.player} {self.from_team} -> {self.to_team}"
+        if self.pick_year and self.pick_round:
+            return f"Pick {self.pick_year} R{self.pick_round} {self.from_team} -> {self.to_team}"
+        if self.cash_amount:
+            return f"Cash ${self.cash_amount} {self.from_team} -> {self.to_team}"
+        return f"Trade item {self.id}"
 
 
 class Draft(models.Model):

@@ -56,7 +56,7 @@ echo "Stopping any existing dev servers on ports 8000/3000..."
 lsof -ti :8000 2>/dev/null | xargs -r kill || true
 lsof -ti :3000 2>/dev/null | xargs -r kill || true
 
-backend_cmd="cd \"$ROOT_DIR/backend\" && source ../.venv/bin/activate && python manage.py runserver 0.0.0.0:8000"
+backend_cmd="cd \"$ROOT_DIR/backend\" && source ../.venv/bin/activate && python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
 frontend_cmd="cd \"$ROOT_DIR/frontend\" && npm run dev -- --host 0.0.0.0 --port 3000"
 
 TERMINAL=$(pick_terminal || true)

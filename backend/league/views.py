@@ -1,4 +1,6 @@
 from django.utils import timezone
+import random
+from typing import Optional
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 
@@ -10,6 +12,8 @@ from .models import (
     Injury,
     League,
     Notification,
+    NotificationPreference,
+    AuditLog,
     Player,
     Season,
     Team,
@@ -20,19 +24,20 @@ from .models import (
     Conference,
     Division,
     Contract,
+    ByeWeek,
 )
 from .serializers import (
     ContractSerializer,
     DraftSerializer,
     DraftPickSerializer,
     GameSerializer,
+    GameUpdateSerializer,
     LeagueSerializer,
     LeagueStructureSerializer,
     ConferenceRenameSerializer,
     PlayerSerializer,
     DivisionRenameSerializer,
     PlayoffSeedSerializer,
-    PlayoffMatchupSerializer,
     SeasonSerializer,
     TradeSerializer,
     WaiverClaimSerializer,
@@ -41,11 +46,136 @@ from .serializers import (
     InjurySerializer,
     FreeAgencyBidSerializer,
     NotificationSerializer,
+    NotificationPreferenceSerializer,
+    AuditLogSerializer,
+    ByeWeekSerializer,
+    PlayLogSerializer,
+    TeamGameStatSerializer,
+    PlayerGameStatSerializer,
+    PlayerSeasonStatSerializer,
+    InjurySerializer,
 )
 from .services.schedule_generator import generate_regular_season_schedule
 from .services.standings import compute_standings
-from .services.playoffs import generate_playoff_seeds, generate_bracket
+from .services.playoffs import generate_playoff_seeds, generate_bracket, playoff_progress, advance_playoff_rounds
+from .services.simulator import simulate_game, persist_sim_result
+from .services.stats import player_season_stats, player_leaders, team_season_stats
 from .utils import log_action
+from django.db import transaction
+from django.db import models
+
+
+def notify_user(user, message: str, category: str = "general"):
+    """
+    Send an in-app notification if preferences allow. Email is stubbed for now.
+    """
+    pref, _ = NotificationPreference.objects.get_or_create(user=user)
+    if pref.in_app_enabled:
+        Notification.objects.create(user=user, category=category, message=message)
+    # email_enabled is a future stub; place holder for SMTP hook
+    return True
+
+
+FIRST_NAMES = [
+    "Alex",
+    "Jordan",
+    "Chris",
+    "Taylor",
+    "Casey",
+    "Sam",
+    "Devin",
+    "Riley",
+    "Quinn",
+    "Shawn",
+    "Marcus",
+    "Evan",
+    "Noah",
+    "Liam",
+    "Mason",
+    "Logan",
+    "Caleb",
+    "Isaiah",
+    "Dylan",
+    "Micah",
+]
+
+LAST_NAMES = [
+    "Johnson",
+    "Miller",
+    "Davis",
+    "Thompson",
+    "Lewis",
+    "Walker",
+    "Robinson",
+    "Young",
+    "Allen",
+    "Parker",
+    "Anderson",
+    "Bennett",
+    "Campbell",
+    "Cooper",
+    "Edwards",
+    "Foster",
+    "Griffin",
+    "Hayes",
+    "Mitchell",
+    "Reed",
+]
+
+POSITION_BANDS = {
+    "QB": (68, 90),
+    "RB": (62, 86),
+    "WR": (62, 88),
+    "TE": (58, 85),
+    "OL": (62, 85),
+    "DL": (62, 86),
+    "LB": (62, 85),
+    "CB": (62, 87),
+    "S": (62, 85),
+    "K": (60, 80),
+    "P": (60, 80),
+}
+
+ROSTER_TEMPLATE = [
+    ("QB", 3),
+    ("RB", 4),
+    ("WR", 6),
+    ("TE", 3),
+    ("OL", 9),
+    ("DL", 8),
+    ("LB", 6),
+    ("CB", 6),
+    ("S", 4),
+    ("K", 1),
+    ("P", 1),
+]
+
+
+def _random_name():
+    return random.choice(FIRST_NAMES), random.choice(LAST_NAMES)
+
+
+def _random_rating(position: str):
+    low, high = POSITION_BANDS.get(position, (60, 80))
+    return random.randint(low, high)
+
+
+def create_generated_player(league: League, position: str, is_rookie_pool: bool, team: Optional[Team] = None):
+    first, last = _random_name()
+    overall = _random_rating(position)
+    player = Player.objects.create(
+        league=league,
+        team=team,
+        first_name=first,
+        last_name=last,
+        position=position,
+        age=22 if is_rookie_pool else random.randint(22, 32),
+        overall_rating=overall,
+        potential_rating=min(95, overall + random.randint(5, 18)),
+        injury_status="healthy",
+        is_rookie_pool=is_rookie_pool,
+    )
+    return player
 
 
 class LeagueListCreateView(generics.ListCreateAPIView):
@@ -252,7 +382,8 @@ class TeamRosterCreateView(generics.CreateAPIView):
         team = self._get_team()
         league = team.league
 
-        if team.players.count() >= league.roster_size_limit:
+        active_count = team.players.filter(on_ir=False).count()
+        if active_count >= league.roster_size_limit:
             return Response({"detail": "Roster limit reached."}, status=status.HTTP_400_BAD_REQUEST)
 
         player_serializer = self.get_serializer(data=request.data)
@@ -464,6 +595,8 @@ class TradeAcceptView(generics.UpdateAPIView):
             return Response(roster_limits_error, status=status.HTTP_400_BAD_REQUEST)
 
         for item in trade.items.select_related("player"):
+            if not item.player:
+                continue
             player = item.player
             player.team = item.to_team
             player.save(update_fields=["team"])
@@ -486,10 +619,12 @@ class TradeAcceptView(generics.UpdateAPIView):
         limits = {}
         for team in [trade.from_team, trade.to_team]:
             limits[team.id] = {
-                "count": team.players.count(),
+                "count": team.players.filter(on_ir=False).count(),
                 "cap": sum(c.cap_hit for c in team.contracts.all()),
             }
         for item in trade.items.select_related("player"):
+            if not item.player:
+                continue
             from_team = item.from_team
             to_team = item.to_team
             limits[from_team.id]["count"] -= 1
@@ -525,6 +660,8 @@ class TradeReverseView(generics.UpdateAPIView):
             return Response({"detail": "Not authorized to reverse trades."}, status=status.HTTP_403_FORBIDDEN)
 
         for item in trade.items.select_related("player"):
+            if not item.player:
+                continue
             player = item.player
             player.team = item.from_team
             player.save(update_fields=["team"])
@@ -637,31 +774,13 @@ class RookiePoolGenerateView(generics.GenericAPIView):
 
     def post(self, request, league_id):
         league = generics.get_object_or_404(League, pk=league_id)
-        # simple deterministic pool
-        import random
-        first_names = ["Alex", "Jordan", "Chris", "Taylor", "Casey", "Sam", "Devin", "Riley", "Quinn", "Shawn"]
-        last_names = ["Johnson", "Miller", "Davis", "Thompson", "Lewis", "Walker", "Robinson", "Young", "Allen", "Parker"]
-        positions = ["QB", "RB", "WR", "TE", "OL", "DL", "LB", "CB", "S", "K", "P"]
         created = []
-        for i in range(30):
-            first = random.choice(first_names)
-            last = random.choice(last_names)
-            pos = random.choice(positions)
-            base = {"QB": (65, 85), "RB": (60, 82), "WR": (60, 84), "TE": (55, 80), "OL": (60, 83), "DL": (60, 84), "LB": (60, 83), "CB": (60, 84), "S": (60, 82), "K": (60, 78), "P": (60, 78)}
-            lo, hi = base.get(pos, (60, 80))
-            overall = random.randint(lo, hi)
-            player = Player.objects.create(
-                league=league,
-                first_name=first,
-                last_name=last,
-                position=pos,
-                age=22,
-                overall_rating=overall,
-                potential_rating=min(95, overall + random.randint(5, 20)),
-                injury_status="healthy",
-                is_rookie_pool=True,
-            )
-            created.append(player.id)
+        # Two copies of the roster template to make ~50-60 rookies
+        for _ in range(2):
+            for pos, count in ROSTER_TEMPLATE:
+                for _ in range(count):
+                    player = create_generated_player(league, pos, is_rookie_pool=True)
+                    created.append(player.id)
         return Response({"created": created}, status=status.HTTP_201_CREATED)
 
 
@@ -673,6 +792,33 @@ class RookiePoolListView(generics.ListAPIView):
         league_id = self.kwargs.get("league_id")
         league = generics.get_object_or_404(League, pk=league_id)
         return Player.objects.filter(league=league, is_rookie_pool=True, team__isnull=True).order_by("-overall_rating")
+
+
+class SeedDefaultRostersView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, league_id):
+        league = generics.get_object_or_404(League, pk=league_id)
+        created = []
+        for team in league.teams.all():
+            active_count = team.players.filter(on_ir=False).count()
+            if active_count >= league.roster_size_limit:
+                continue
+            for pos, count in ROSTER_TEMPLATE:
+                current_at_pos = team.players.filter(position=pos).count()
+                needed = max(0, count - current_at_pos)
+                for _ in range(needed):
+                    player = create_generated_player(league, pos, is_rookie_pool=False, team=team)
+                    Contract.objects.create(
+                        player=player,
+                        team=team,
+                        salary=max(500000, player.overall_rating * 20000),
+                        bonus=0,
+                        years=1,
+                        start_year=timezone.now().year,
+                    )
+                    created.append(player.id)
+        return Response({"created": created}, status=status.HTTP_201_CREATED)
 
 
 class DraftCreateView(generics.CreateAPIView):
@@ -798,7 +944,47 @@ class GameCompleteView(generics.UpdateAPIView):
             details={"week_id": game.week_id, "home": game.home_score, "away": game.away_score},
             request=request,
         )
+        # Auto-advance playoff rounds by creating the next slate when playoff games finish
+        if game.week.is_playoffs:
+            advance_playoff_rounds(game.week.season, seeds=7)
         return Response(self.get_serializer(game).data)
+
+
+class GameUpdateView(generics.UpdateAPIView):
+    serializer_class = GameUpdateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = Game.objects.select_related("week", "week__season", "home_team", "away_team")
+
+    def update(self, request, *args, **kwargs):
+        game = self.get_object()
+        season = game.week.season
+        league = season.league
+        user = request.user
+        if not (
+            getattr(user, "is_commissioner", False)
+            or user.is_staff
+            or user.is_superuser
+            or league.created_by_id == user.id
+        ):
+            return Response({"detail": "Not authorized to edit games."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = self.get_serializer(game, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        home = serializer.validated_data.get("home_team", game.home_team)
+        away = serializer.validated_data.get("away_team", game.away_team)
+        week = serializer.validated_data.get("week", game.week)
+        if home.league_id != league.id or away.league_id != league.id or week.season.league_id != league.id:
+            return Response({"detail": "Teams and week must belong to this league."}, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        log_action(
+            user=user,
+            action="league.update",
+            entity_type="game",
+            entity_id=game.id,
+            details={"week_id": week.id, "home": home.id, "away": away.id},
+            request=request,
+        )
+        return Response(GameSerializer(game).data)
 
 
 class PlayoffSeedingView(generics.GenericAPIView):
@@ -817,21 +1003,30 @@ class PlayoffSeedingView(generics.GenericAPIView):
 
 
 class PlayoffBracketView(generics.GenericAPIView):
-    serializer_class = PlayoffMatchupSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, league_id, year):
         season = generics.get_object_or_404(Season, league_id=league_id, year=year)
-        seeds_raw = generate_playoff_seeds(season, seeds=8)
-        # add seed numbers if missing
-        for idx, seed in enumerate(seeds_raw, start=1):
-            seed.setdefault("seed", idx)
-        bracket_pairs = generate_bracket(season, seeds=8)
-        data = []
-        for higher, lower in bracket_pairs:
-            data.append({"higher_seed": higher, "lower_seed": lower})
-        serializer = self.get_serializer(data, many=True)
-        return Response(serializer.data)
+        data = playoff_progress(season, seeds=7)
+        return Response(data)
+
+
+class PlayoffAdvanceView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, league_id, year):
+        season = generics.get_object_or_404(Season, league_id=league_id, year=year)
+        league = season.league
+        user = request.user
+        if not (
+            getattr(user, "is_commissioner", False)
+            or user.is_staff
+            or user.is_superuser
+            or league.created_by_id == user.id
+        ):
+            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+        created = advance_playoff_rounds(season, seeds=7)
+        return Response({"created_game_ids": created})
 
 
 class FreeAgentListView(generics.ListAPIView):
@@ -844,9 +1039,18 @@ class FreeAgentListView(generics.ListAPIView):
         return Player.objects.filter(league=league, team__isnull=True, is_rookie_pool=False).order_by("-overall_rating")
 
 
-class FreeAgencyBidView(generics.CreateAPIView):
+class FreeAgencyBidView(generics.ListCreateAPIView):
     serializer_class = FreeAgencyBidSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        league_id = self.kwargs.get("league_id")
+        league = generics.get_object_or_404(League, pk=league_id)
+        return (
+            FreeAgencyBid.objects.filter(league=league)
+            .select_related("player", "team")
+            .order_by("-created_at")
+        )
 
     def create(self, request, *args, **kwargs):
         league_id = self.kwargs.get("league_id")
@@ -865,8 +1069,8 @@ class FreeAgencyBidView(generics.CreateAPIView):
         ):
             return Response({"detail": "Not authorized to bid for this team."}, status=status.HTTP_403_FORBIDDEN)
 
-        # simple cap/roster checks
-        roster_count = team.players.count()
+        # cap/roster checks
+        roster_count = team.players.filter(on_ir=False).count()
         if roster_count >= league.roster_size_limit:
             return Response({"detail": "Roster limit reached."}, status=status.HTTP_400_BAD_REQUEST)
         current_cap = sum(c.cap_hit for c in team.contracts.all())
@@ -881,6 +1085,7 @@ class FreeAgencyBidView(generics.CreateAPIView):
             mode=league.free_agency_mode,
             status="pending",
             round_number=1,
+            expires_at=timezone.now() + timezone.timedelta(hours=1) if league.free_agency_mode == "auction" else None,
         )
         log_action(
             user=user,
@@ -890,6 +1095,12 @@ class FreeAgencyBidView(generics.CreateAPIView):
             details={"league_id": league.id, "player_id": player.id, "team_id": team.id, "amount": amount},
             request=request,
         )
+        if team.owner_id:
+            notify_user(
+                user=team.owner,
+                category="free_agency",
+                message=f"FA bid placed: {player} for ${amount}",
+            )
         serializer = self.get_serializer(bid)
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -900,36 +1111,46 @@ class FreeAgencyResolveView(generics.GenericAPIView):
 
     def post(self, request, league_id):
         league = generics.get_object_or_404(League, pk=league_id)
+        now = timezone.now()
         pending = FreeAgencyBid.objects.filter(league=league, status="pending").select_related("player", "team")
+        # filter out expired auctions
+        if league.free_agency_mode == "auction":
+            pending = pending.filter(models.Q(expires_at__lte=now) | models.Q(expires_at__isnull=True))
         awarded = []
         for player_id in pending.values_list("player_id", flat=True).distinct():
-            bids = pending.filter(player_id=player_id).order_by("-amount", "created_at")
+            if league.free_agency_mode == "rounds":
+                bids = pending.filter(player_id=player_id).order_by("round_number", "created_at")
+            else:
+                bids = pending.filter(player_id=player_id).order_by("-amount", "created_at")
             if not bids:
                 continue
             bid = bids.first()
             team = bid.team
             # cap/roster re-check
-            roster_count = team.players.count()
+            roster_count = team.players.filter(on_ir=False).count()
             if roster_count >= league.roster_size_limit:
                 continue
             current_cap = sum(c.cap_hit for c in team.contracts.all())
             if current_cap + float(bid.amount) > float(league.salary_cap):
                 continue
             # award
-            bid.status = "awarded"
-            bid.awarded_at = timezone.now()
-            bid.save(update_fields=["status", "awarded_at"])
-            player = bid.player
-            player.team = team
-            player.save(update_fields=["team"])
-            Contract.objects.create(
-                player=player,
-                team=team,
-                salary=bid.amount,
-                bonus=0,
-                years=1,
-                start_year=timezone.now().year,
-            )
+            with transaction.atomic():
+                bid.status = "awarded"
+                bid.awarded_at = timezone.now()
+                bid.save(update_fields=["status", "awarded_at"])
+                # reject other bids on this player
+                pending.filter(player_id=player_id, status="pending").exclude(id=bid.id).update(status="rejected")
+                player = bid.player
+                player.team = team
+                player.save(update_fields=["team"])
+                Contract.objects.create(
+                    player=player,
+                    team=team,
+                    salary=bid.amount,
+                    bonus=0,
+                    years=1,
+                    start_year=timezone.now().year,
+                )
             awarded.append(bid.id)
             log_action(
                 user=request.user,
@@ -939,6 +1160,12 @@ class FreeAgencyResolveView(generics.GenericAPIView):
                 details={"league_id": league.id, "player_id": player.id, "team_id": team.id, "amount": bid.amount},
                 request=request,
             )
+            if team.owner_id:
+                notify_user(
+                    user=team.owner,
+                    category="free_agency",
+                    message=f"Free agent {player} awarded to {team.abbreviation} for ${bid.amount}",
+                )
         return Response({"awarded": awarded}, status=status.HTTP_200_OK)
 
 
@@ -960,7 +1187,15 @@ class InjuryListCreateView(generics.ListCreateAPIView):
         duration = int(request.data.get("duration_weeks", 1))
         injury = Injury.objects.create(player=player, league=league, severity=severity, duration_weeks=duration)
         player.injury_status = severity
-        player.save(update_fields=["injury_status"])
+        if severity == "major" or duration >= 4:
+            player.on_ir = True
+        player.save(update_fields=["injury_status", "on_ir"])
+        if player.team and player.team.owner_id:
+            notify_user(
+                user=player.team.owner,
+                category="injury",
+                message=f"{player} injured ({severity}, {duration}w)",
+            )
         serializer = self.get_serializer(injury)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -977,7 +1212,14 @@ class InjuryResolveView(generics.UpdateAPIView):
         injury.save(update_fields=["status", "resolved_at"])
         # reset player status
         injury.player.injury_status = "healthy"
-        injury.player.save(update_fields=["injury_status"])
+        injury.player.on_ir = False
+        injury.player.save(update_fields=["injury_status", "on_ir"])
+        if injury.player.team and injury.player.team.owner_id:
+            notify_user(
+                user=injury.player.team.owner,
+                category="injury",
+                message=f"{injury.player} has healed",
+            )
         serializer = self.get_serializer(injury)
         return Response(serializer.data)
 
@@ -1003,6 +1245,200 @@ class NotificationMarkReadView(generics.UpdateAPIView):
         notif.save(update_fields=["is_read"])
         serializer = self.get_serializer(notif)
         return Response(serializer.data)
+
+
+class NotificationPreferenceView(generics.RetrieveUpdateAPIView):
+    serializer_class = NotificationPreferenceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        pref, _ = NotificationPreference.objects.get_or_create(user=self.request.user)
+        return pref
+
+
+class AuditLogListView(generics.ListAPIView):
+    serializer_class = AuditLogSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = AuditLog.objects.all().order_by("-created_at")
+        league_id = self.request.query_params.get("league_id")
+        if league_id:
+            qs = qs.filter(details__league_id=str(league_id))
+        return qs[:100]
+
+
+class PlayLogListView(generics.ListAPIView):
+    serializer_class = PlayLogSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        game_id = self.kwargs.get("pk")
+        game = generics.get_object_or_404(Game, pk=game_id)
+        return game.plays.all()
+
+
+class GameSimulateView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        game = generics.get_object_or_404(Game.objects.select_related("week", "week__season"), pk=pk)
+        league = game.week.season.league
+        user = request.user
+        if not (
+            getattr(user, "is_commissioner", False)
+            or user.is_staff
+            or user.is_superuser
+            or league.created_by_id == user.id
+        ):
+            return Response({"detail": "Not authorized to simulate this game."}, status=status.HTTP_403_FORBIDDEN)
+        result = simulate_game(game)
+        persist_sim_result(game, result)
+        log_action(
+            user=user,
+            action="game.simulate",
+            entity_type="game",
+            entity_id=game.id,
+            details={"home": game.home_team_id, "away": game.away_team_id},
+            request=request,
+        )
+        return Response(
+            {
+                "game_id": game.id,
+                "home_score": game.home_score,
+                "away_score": game.away_score,
+                "status": game.status,
+                "plays": PlayLogSerializer(game.plays.all(), many=True).data,
+                "team_stats": TeamGameStatSerializer(game.team_stats.all(), many=True).data,
+            }
+        )
+
+
+class WeekSimulateView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, league_id, year, week_number):
+        season = generics.get_object_or_404(Season, league_id=league_id, year=year)
+        games = Game.objects.filter(week__season=season, week__number=week_number, week__is_playoffs=False)
+        results = []
+        for game in games:
+            res = simulate_game(game)
+            persist_sim_result(game, res)
+            log_action(
+                user=request.user,
+                action="game.simulate",
+                entity_type="game",
+                entity_id=game.id,
+                details={"home": game.home_team_id, "away": game.away_team_id, "week": week_number},
+                request=request,
+            )
+            results.append(
+                {
+                    "game_id": game.id,
+                    "home_score": game.home_score,
+                    "away_score": game.away_score,
+                    "status": game.status,
+                }
+            )
+        return Response({"simulated": results})
+
+
+class PlayerSeasonStatsView(generics.GenericAPIView):
+    serializer_class = PlayerSeasonStatSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, league_id, year):
+        season = generics.get_object_or_404(Season, league_id=league_id, year=year)
+        stats = player_season_stats(season)
+        serializer = self.get_serializer(stats, many=True)
+        return Response(serializer.data)
+
+
+class PlayerLeadersView(generics.GenericAPIView):
+    serializer_class = PlayerSeasonStatSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, league_id, year):
+        stat = request.query_params.get("stat", "pass_yds")
+        limit = int(request.query_params.get("limit", 10))
+        season = generics.get_object_or_404(Season, league_id=league_id, year=year)
+        leaders = player_leaders(season, stat=stat, limit=limit)
+        serializer = self.get_serializer(leaders, many=True)
+        return Response(serializer.data)
+
+
+class TeamSeasonStatsView(generics.GenericAPIView):
+    serializer_class = TeamGameStatSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, league_id, year):
+        season = generics.get_object_or_404(Season, league_id=league_id, year=year)
+        stats = team_season_stats(season)
+        return Response(stats)
+
+
+class PlayerDetailView(generics.RetrieveAPIView):
+    serializer_class = PlayerSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = Player.objects.select_related("team", "league")
+
+    def retrieve(self, request, *args, **kwargs):
+        player = self.get_object()
+        data = self.get_serializer(player).data
+        latest_stat = (
+            PlayerGameStat.objects.filter(player=player).order_by("-id").first()
+        )
+        if latest_stat:
+            data["latest_stat"] = PlayerGameStatSerializer(latest_stat).data
+        # include contract snapshot and injury history
+        latest_contract = player.contracts.order_by("-start_year", "-id").first()
+        if latest_contract:
+            data["contract"] = ContractSerializer(latest_contract).data
+        injuries = player.injuries.order_by("-created_at")
+        data["injuries"] = InjurySerializer(injuries, many=True).data
+        return Response(data)
+
+
+class PlayerCompareView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        ids = request.data.get("player_ids", [])
+        players = Player.objects.filter(id__in=ids).select_related("team")
+        payload = []
+        for p in players:
+            entry = PlayerSerializer(p).data
+            entry["team_abbr"] = getattr(p.team, "abbreviation", None)
+            payload.append(entry)
+        return Response(payload)
+
+
+class ByeWeekListCreateView(generics.ListCreateAPIView):
+    serializer_class = ByeWeekSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        league_id = self.kwargs.get("league_id")
+        year = self.kwargs.get("year")
+        season = generics.get_object_or_404(Season, league_id=league_id, year=year)
+        return season.byes.select_related("team")
+
+    def create(self, request, *args, **kwargs):
+        league_id = self.kwargs.get("league_id")
+        year = self.kwargs.get("year")
+        season = generics.get_object_or_404(Season, league_id=league_id, year=year)
+        team_id = request.data.get("team")
+        week_number = int(request.data.get("week_number", 1))
+        team = generics.get_object_or_404(Team, pk=team_id, league_id=league_id)
+        bye, _ = ByeWeek.objects.get_or_create(season=season, team=team, week_number=week_number)
+        serializer = self.get_serializer(bye)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ByeWeekDeleteView(generics.DestroyAPIView):
+    serializer_class = ByeWeekSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = ByeWeek.objects.all()
 
 
 class GameCompleteView(generics.UpdateAPIView):

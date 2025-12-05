@@ -131,6 +131,9 @@ REST_FRAMEWORK = {
     ],
 }
 
+# Test settings
+TEST_NON_SERIALIZED_APPS = ["league"]
+
 # CORS
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [origin for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin]
